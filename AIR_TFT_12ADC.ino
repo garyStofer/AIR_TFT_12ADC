@@ -3,27 +3,36 @@
 #include <Wire.h>
 #include "TC_coeff.h"
 
-// Using the hardware SPI interface only these additional pins need to be defined
-#define TFT_CS     9
-#define TFT_RST    7  // you can also connect this to the Arduino reset
-                      // in which case, set this #define pin to -1!
-#define TFT_DC     8
+// Using the HW SPI interface of ATMEL 328P
+// Connect signal SCL on TFT board to SCK of 328P , pin17, PB5 (SCK) 
+// Connect signal SDA on TFT board to MOSI of 328P, pin15 , PB3(MOSI)
+// only these additional pins need to be defined
+#define TFT_CS     9 // Chip select -- Could also use SlaveSelect from HW SPI interface 
+#define TFT_RST    7 // you can also connect this to the Arduino reset, in which case, set this #define pin to -1!
+#define TFT_DC     8 //  This is Data/Command of the TFT, often labeled as A0 on TFT board
+
+// The two LEDS 
 #define LED1_PIN 	10     // aka PB2,SS Wired to RED LED, Also used as slave select pin for the SD card 
 #define LED2_PIN 	17     // aka PC3,A3, Wired to Blue LED, also used for the Servo pulse pin
 
+
+
 #define VBUS_ADC 7			// ADC7
-#define VBUS_ADC_BW  (5.0*(14+6.8)/(1024*6.8))		//adc bit weight for voltage divider 14.0K and 6.8k to gnd.
+#define VBUS_ADC_BW  (5.0*(14+6.8)/(1024*6.8))	//Bit weight of ADC7 using a voltage divider 14.0K and 6.8k to gnd.
 
 // defines for the bar graph
-#define BAR_gap 2     // pixels between two bars
+#define CHAR_HEIGHT 7 	// a character at scale 1 is 7 pixels tall , plus 1 for gap
+#define CHAR_WIDTH 5    // plus one for gap  
+#define BAR_gap 1       // horizontal gap between two bars
 
 #define BAR_BOT_LEGEND (disp_height -8)
-#define BAR_TOP_LEGEND (0)
+#define BAR_TOP_LEGEND (8)
 #define BAR_bottom (disp_height-10)  // location of bottom most pixel
-#define BAR_top 8                       // top most pixel
+#define BAR_top BAR_TOP_LEGEND       // top most pixel
 #define BAR_height (BAR_bottom - BAR_top)
-#define BAR_leftMargin 8
-#define BAR_rightMargin  8 
+#define BAR_leftMargin 28
+#define BAR_rightMargin 0
+#define BAR_DISP_width (disp_width - BAR_leftMargin - BAR_rightMargin)
 
 #define N_BARS 6		// 1 through 6
 #define BAR_width (( disp_width - BAR_leftMargin - BAR_rightMargin - ((N_BARS-1) * BAR_gap) ) /N_BARS)// pixels of width of bar
@@ -35,13 +44,15 @@ unsigned short disp_height, disp_width;
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS,  TFT_DC, TFT_RST);
 
 // The LTC_2495 has a strange ADC output format. It has 16 bits of ADC resolution plus a seperate sign and overflow bit. 
-// The data arrives in a 3 byte stream with the 6lsb all indicating 0's.  So when shifted down 6 positions the bits 0 through 15 
+// The data arrives in a 3 byte stream with 6 lsb indicating all 0's. When shifted down 6 positions the bits 0 through 15 
 // hold a unsigned 16 bit int
 
 #define LTC_2495_ADDR 	(0x45) 		// 7 bit I2C address for ADC -- All address pins left floating
 #define ADC_REFERENCE_V (2.048)		// Reference voltage on VREF+, v.s. VREF-
 #define ADC_SPEED_GAIN (0x83) 		// 1x speed , gain 16, input range = +- 64mv, (Vref/2/16= 0.064), 
 #define ADC_Bit_Value (ADC_REFERENCE_V/2/16/65536)  // Bit value of ADC to correspond to gain and reference 
+
+// Union to read the LTC_2495 ADC
 union adc
 {
 	uint8_t bytes[4];	
@@ -52,53 +63,159 @@ union adc
 float Temps[ MAX_CHANNEL+1];		// index 0  is cold junction, then ch1, ch2
 #define COLD_JCT_NDX 	0
 
-#define EGT_MAX  900
-#define EGT_ZOOM 650
-
-/* draws a bar at column pos as a fraction of max height*/
+#define TREND_HYST 1		// half of the hystery in deg C -- 
 	
-void DrawBar(  uint8_t pos, float height,  uint16_t color = ST7735_MAGENTA) 
+#define CtoF( tC ) ( tC / 0.5555555555 +32)
+#define FtoC(xF ) ( (xF - 32.0) * 0.55555555555)
+
+// in deg F  used for display only 
+#define F_EGT_MAX  1650		  
+#define F_EGT_ZOOM 1200		
+// in deg C -- used in code
+#define C_EGT_MAX  (FtoC(F_EGT_MAX))
+#define C_EGT_ZOOM (FtoC(F_EGT_ZOOM))
+
+/* 
+ *  	Draws the scale grid and legend.  Arguments indicate low and high endpoints
+ *
+*/
+	
+void DrawScale( int low, int high ) 
+{
+
+	unsigned char y ;
+	int m;
+  
+  // draw scale and grid 
+	tft.fillRect( 0,0, BAR_leftMargin,disp_height,ST7735_BLACK);        // clear the text area on the left
+	y = BAR_top;
+	tft.drawFastHLine(BAR_leftMargin -BAR_gap, y , BAR_DISP_width, ST7735_WHITE);
+	tft.setCursor(0, y-4);
+	tft.print(high);
+	
+	y = BAR_top + BAR_height/4;
+	m = (high-low)/4*3+low;
+	tft.drawFastHLine(BAR_leftMargin -BAR_gap, y, BAR_DISP_width, ST7735_WHITE);
+	tft.setCursor(0, y-4);
+	tft.print(m);
+	
+	y = BAR_top + BAR_height/2;
+	m = (high-low)/4*2+low;
+	tft.drawFastHLine(BAR_leftMargin -BAR_gap, y, BAR_DISP_width, ST7735_WHITE);
+	tft.setCursor(0, y-4);
+	tft.print(m);
+	
+	y = BAR_top + BAR_height/4*3;
+	m = (high-low)/4*1+low;
+	tft.drawFastHLine(BAR_leftMargin -BAR_gap, y, BAR_DISP_width, ST7735_WHITE);
+	tft.setCursor(0, y-4);
+	tft.print(m);
+	
+	tft.drawFastHLine(BAR_leftMargin -BAR_gap, BAR_bottom-1, BAR_DISP_width, ST7735_WHITE);
+	tft.setCursor(0, BAR_bottom-4);
+	tft.print(low);
+
+	// the bar numbers 
+	for ( int pos = 0; pos<N_BARS; pos++)
+	{
+		int x = pos*(BAR_width+BAR_gap)+BAR_leftMargin;
+		tft.drawChar(x+(BAR_width/3),BAR_BOT_LEGEND,'1'+pos,ST7735_WHITE,ST7735_BLACK,1); 
+	}
+	  
+	return;
+}
+	
+	
+/* Draws a single bar at column "pos" as a fraction of max height*/
+	
+void DrawBar( int8_t pos, float height, uint16_t color = ST7735_MAGENTA, signed char trend = 0) 
 {
   // draw a rectangle bar from the bottom up, spaced every n pixels
-  unsigned char x ;
-  unsigned char y ;
+  unsigned char x,y;
   
   if (pos == 0 ) // This is not a bar -- internal mesurment 
   {
-	  
+	// The delay is here so that the execution time for this internal measurment is the same as for the TC calcs and display
+	// so that we can optimize the loop delay for the general case.
+	delay(24);
+	//Serial.print(" cold junction:");
+	//Serial.println(Temps[COLD_JCT_NDX] ); 
 	  return;
   }
   else 
 	  pos--;		// since bars nuymbers are 1 based
   
-  x = pos*(BAR_width+BAR_gap)+BAR_leftMargin;
-  
-  // 
   if (height > 1.0) 
   {
 	  height = 1.0;
 	  color = ST7735_RED;		// over range 
   }
-  if (height < 0.001)			// under range
-  {
-	height = 0.01;
-	color = ST7735_BLUE;
-  }
-
-  y = height * BAR_height;
-
-  // draw a heading -- 
-  // TODO: this should only be executed once -- redundant to redraw the legends
-  // TODO: draw a side scale 
-  tft.drawChar(x+(BAR_width/3),BAR_BOT_LEGEND,'1'+pos,ST7735_WHITE,ST7735_BLACK,1); 
   
+  if (height < 0.01)			// under range
+  {
+	height = 0.01;				// keep a very thin line 
+  }
+  
+
+  
+  x = pos*(BAR_width+BAR_gap)+BAR_leftMargin;
+  y = height * BAR_height;
+ 
+
   tft.fillRect( x,BAR_bottom - y, BAR_width,y,color);        // draw the bar 
-  tft.fillRect( x,BAR_top, BAR_width, BAR_height-y, ST7735_BLACK);  // erase everytihng above the top 
+  tft.fillRect( x,0, BAR_width, BAR_height-y+BAR_TOP_LEGEND, ST7735_BLACK);  // erase everytihng above the top 
+ 
+	switch (trend)
+	{
+		case 1: // going up
+			tft.drawChar(x+(BAR_width/2)-3,BAR_bottom - y -8 ,0x18,ST7735_RED,ST7735_BLACK,1); 
+			break;
+			
+		case 2:// going down
+			tft.drawChar(x+(BAR_width/2)-3,BAR_bottom - y -8,0x19,ST7735_YELLOW,ST7735_BLACK,1); 
+			break;
+	//	default:  // don't need this -- bar top is already cleared
+	//		tft.drawChar(x+(BAR_width/2)-3,BAR_bottom - y -8,' ',ST7735_YELLOW,ST7735_BLACK,1); 
+			
+			
+	}
 }
 
+void BarDisplay( int8_t curr_ch , float *Temps, unsigned char trend)
+{
+	bool zoom = true;
+	static bool prev_zoom = true;
+	
+	// switch to zoomed mode when all channels are above threshold 
+	for (int i =1; i<= MAX_CHANNEL; i++ )
+	{
+		if (Temps[i] < C_EGT_ZOOM)
+			zoom = false;
+	}
+	// draw the scale and grid when the display range changes 
+	if (zoom != prev_zoom)
+	{
+		if (zoom )
+			DrawScale(F_EGT_ZOOM, F_EGT_MAX);	
+		else
+			DrawScale(0, F_EGT_MAX);	
+			
+		prev_zoom  = zoom;	
+	}
+	
+
+	if (zoom)
+		DrawBar(curr_ch, (Temps[curr_ch] - C_EGT_ZOOM)/(C_EGT_MAX - C_EGT_ZOOM), ST7735_GREEN, trend);
+	else
+		DrawBar(curr_ch, Temps[curr_ch]/ C_EGT_MAX , ST7735_BLUE, trend);	
+	
+}
+
+
+// This is ARDUINO setup function -- called once upon reset
 void setup(void) {
 	
-	uint8_t ret_val;
+	//uint8_t ret_val;
 	uint8_t num;
 	
 	Serial.begin(115200);
@@ -122,12 +239,16 @@ void setup(void) {
 	Serial.print("tft height = ");
 	Serial.println( disp_height);
 */
-	//Wire.setClock( 10000);	 // Slow down the I2C clock for longer wire
+
 	Wire.begin();								// initialize the i2C interface as master
+	//Wire.setClock( 10000); 			//This call seems to do nothing -- so I write the HW registers diectly
 	// setting a lower i2c clock frequency,  F_SCL = F_CPU/ 16 + (2*TWBR*TW_Prescale)
-	TWBR =99;	// for 20Khz clock rate 
+	TWBR = 99;	// for 20Khz clock rate 
 	TWSR |=  1; // == prescale /4
-	Wire.beginTransmission(LTC_2495_ADDR);		// 0x45 when all 3 address pins are floating
+	
+#ifdef notneeded 
+// TODO: can I delete this initial internal reading and let the loop take care of it ??	
+	Wire.beginTransmission(LTC_2495_ADDR);		
 	Wire.write(0xa0);		// Enable bit only
 	Wire.write(0xC0);		// meassure internal temp
 	ret_val = Wire.endTransmission();
@@ -144,7 +265,7 @@ void setup(void) {
 		while (1);
 	}
 
-	delay( 200); // conversion takes about 160ms 
+	delay( 200 ); // conversion takes about 160ms 
 	num = Wire.requestFrom(LTC_2495_ADDR,3);		// this starts a new conversion so that the main loop can read the int temp on the first call
 	if (num != 3 )
 	{
@@ -164,12 +285,17 @@ void setup(void) {
 
 	tft.print("Internal temp: ");
 	tft.println(Temps[COLD_JCT_NDX]); 
+// TODO : can I delete the above cold temp reading ?	
+	
+#endif 
 	float Vbus_Volt = analogRead(VBUS_ADC) * VBUS_ADC_BW;	// read the battery voltage 
 	tft.print("Battery Voltage: ");
 	tft.println(Vbus_Volt);
-		
+
+	// Delay to read the above messages 	
 	delay (2000);	// after the read above a conversion is started again -- can't talk to the chip again until it's done 
 	tft.fillScreen(ST7735_BLACK);	// clear the screen 
+
 	Serial.println("exit setup");
 }
 
@@ -177,27 +303,19 @@ void setup(void) {
 
 
 
-
+// This is the ARDUINO loop execute function, called contineously 
 void loop() 
 { 
-	bool zoom;
+	static int8_t next_ch = MAX_CHANNEL; 
+	static bool prev_zoom = true;
+	bool zoom = true;
 	int32_t ADC_cnt; //  32 bit integer so that we can convey 16bits plus a sign 
-	static int8_t next_ch = 0; // channel 0 is internal temp reading for cold junction temp -- not displayed
 	int8_t curr_ch;			   // the current channel data that is beeing processed lags one behind the next channel	
 	int num;
-	float Vbus_Volt = analogRead(VBUS_ADC) * VBUS_ADC_BW;	// read the battery voltage 
-		
-	if (Vbus_Volt < 6.6 )
-	{
-		tft.fillScreen(ST7735_BLACK);
-		tft.setCursor(10, 10);
-		tft.print(Vbus_Volt);
-		tft.print(" V");
-		tft.setCursor(10, 30);
-		tft.print(" Voltage too low ! ");
-		return;
-	}
+	unsigned char trend =0;
+
 	
+	// Begin of acquiring TC readings  -- one reading per loop 	
 	// set the channel for the next reading 
 	if ( ++next_ch > MAX_CHANNEL )
 	{
@@ -205,7 +323,33 @@ void loop()
 		Wire.beginTransmission(LTC_2495_ADDR);	
 		Wire.write(0xa0);		// Enable bit only
 		Wire.write(0xC0);		// meassure internal temp
-		Wire.endTransmission( 0 ); // ending with ReStart instead of STOP so that we still can read the result from the last conversion
+		uint8_t ret_val = Wire.endTransmission( 0 ); // ending with ReStart instead of STOP so that we still can read the result from the last conversion
+		// 0 == success
+		// 1 == NACK upon transmit of address
+		// 2 == NACK upon transmit of DATA
+		// 3 == Other error
+		if (ret_val )
+		{
+			digitalWrite( LED1_PIN, 1);
+			tft.fillScreen(ST7735_BLACK);
+			tft.setCursor(10, 10);
+			tft.println("ADC not responding -- STOP!");
+			
+		}
+		
+		// do the Vbus reading at the same time as the cold junction reading
+		float Vbus_Volt = analogRead(VBUS_ADC) * VBUS_ADC_BW;	// read the battery voltage 
+		// Check the power bus voltage
+		if (Vbus_Volt < 6.6 )
+		{
+			tft.fillScreen(ST7735_BLACK);
+			tft.setCursor(10, 10);
+			tft.print(Vbus_Volt);
+			tft.print(" V");
+			tft.setCursor(10, 30);
+			tft.print(" Voltage too low! STOP ");
+			while (1);
+		}
 	}
 	else
 	{	
@@ -221,10 +365,15 @@ void loop()
 	if( curr_ch < COLD_JCT_NDX )
 		curr_ch = MAX_CHANNEL;
 	
-	num = Wire.requestFrom(LTC_2495_ADDR,3);	// reads the last conversion and restarts new conversion immediatly
-// TODO:		
-// if not enough is read then alarm	
-//	Serial.print(" i2c returns bytes (3): ");Serial.println(num);
+	if (Wire.requestFrom(LTC_2495_ADDR,3) != 3 )	// reads the last conversion and restarts new conversion immediately
+	{
+		digitalWrite( LED1_PIN, 1);
+		tft.fillScreen(ST7735_BLACK);
+		tft.setCursor(10, 10);
+		tft.println("ADC not ready with result, STOP!");
+		while (1) ;
+	}
+
 	ADC_result.bytes[2] = Wire.read();	// MSB  
 	ADC_result.bytes[1] = Wire.read();
 	ADC_result.bytes[0] = Wire.read();	// LSB
@@ -232,24 +381,18 @@ void loop()
 	// shift out the lower 6 bits that are all 0's and use the 16 bits as positive integer
 	ADC_cnt = (uint16_t) (ADC_result.adc_val_24 >> 6); // it's a positive 16 bit number
 	
-	if (curr_ch == 0 )	// the 'last' conversion was on internal temp 
+	if (curr_ch == 0 )	// the 'last' conversion was the internal temp (cold junction)
 	{
 		Temps[COLD_JCT_NDX] = 	 (ADC_cnt * ADC_REFERENCE_V /12.25) -273.0;// temperature formula from datasheet in Kelvin
-		// add a delay here so that the execution time for this internal measurment is the same as for the TC calcs and display
-		// so that we can optimize the loop delay for the general case	
-		delay(24);
-		//Serial.print(" cold junction:");
-		//Serial.println(Temps[COLD_JCT_NDX] ); 
 	}
 	else // it's a thermocouple
 	{
 		float * tab;		// pointer to the coeff table 
 			
-		// sign bit true ==  positive voltages in lower 16 bits /*
-		
+		// if sign bit true ==  positive voltages in lower 16 bits /*
 		if ( ! (ADC_result.bytes[2] & 0x80) )	// it's a negative 16 bit number 
 		{
-			ADC_cnt = 0;			// upside down thermocouples read 0 
+			ADC_cnt = 0;			// upside down connected thermocouple:  read 0 
 		} 
 
 		float TC_mv = ADC_cnt * ADC_Bit_Value * 1000; // in millivolts for coeff table 
@@ -263,257 +406,52 @@ void loop()
 			tab = K_TC_coeff500_plus; 
 
 		// calculate the thermocouple t90 from thermal EMF per NIST polynomial
-		float TC_Temp;
+		float TC_Temp_C;
 		for (int n = 0; n <= N_poly; n++ )
 		{
 			double EE;// the n'th power of TC EMF
 			if ( n == 0 )
 			{
 				EE = TC_mv;
-				TC_Temp = tab[0];
+				TC_Temp_C = tab[0];
 			}
 			else
 			{
-				TC_Temp += EE * tab[n];
+				TC_Temp_C += EE * tab[n];
 				EE *= TC_mv;	// next power 
 			}
 
 		}
-		// this is not quite correct, but close enough -- should convert cold temp to EMF since poly is based from 0deg C
-		// requires logarithm functions -- too expensive in mem foot print
-		Temps[curr_ch] = TC_Temp += Temps[COLD_JCT_NDX];
-	}
 
-	// switch to zoomed mode when all channels are above threshold, 
-	// maybe add a hysteresis if this is jumpy
-	zoom = true;
-	for (int i =1; i<= MAX_CHANNEL; i++ )
-	{
-		if (Temps[i] < EGT_ZOOM)
-		{
-			zoom = false;
-			break;
-		}
-		
-	}
-	
-	if (Temps[curr_ch] <= 0 )
-		DrawBar(curr_ch, 0 );
-	else
-	{ 
-		if (zoom)
-			DrawBar(curr_ch, (Temps[curr_ch] - EGT_ZOOM)/(EGT_MAX - EGT_ZOOM), ST7735_GREEN);
-		else
-			DrawBar(curr_ch, Temps[curr_ch]/ EGT_MAX , ST7735_BLUE);
-	}
+		// This math is not quite correct, but close enough -- should convert cold temp to EMF since poly is based from 0 deg C,
+		// however that requires logarithm functions -- too expensive in mem foot print
+		if (TC_Temp_C > 0.0 )
+		{	
+			TC_Temp_C += Temps[COLD_JCT_NDX]; // add in the cold junction temp
 			
-	
+			if ( (TC_Temp_C - TREND_HYST) > Temps[curr_ch] )
+				trend = 1;		// Rising 
+			else if ((TC_Temp_C + TREND_HYST) < Temps[curr_ch] )
+				trend = 2;		// Falling
+			Temps[curr_ch] = TC_Temp_C;
+		}
+		else
+			Temps[curr_ch] = -10e5;		// If the probe is connected upside down, display a zero bar
+		
+			
+
+	}
+// end of acquiring TC readings  
+
+	BarDisplay( curr_ch, Temps, trend);
+
 	// according to the datasheet of LTC2495/page5 the conversion time in 50/60hz 1x speed mode is 149ms 
 	// communication,display and computation takes 24ms per loop, so we wait 130ms for a total delay of 154 ms
-	delay(130);		// this is the fastest the chip can convert in the chosen mode and clock
+// TODO: Tune delay with scope
+	
+	
+	delay(140);		// this is the fastest the chip can convert in the chosen mode and clock
 	
 
 
 }
-	
-  /*
-  // display them the other way.
-  for (;i>=0;i--)
-    DrawBar(11-i,(i+1)*8+5,i*2+7);
-  
-  delay(5000);  
-
-  tft.fillScreen(ST7735_BLACK);
-  testfillcircles(10, ST7735_BLUE);
-  testdrawcircles(10, ST7735_WHITE);
-  delay(500);
-
-  testroundrects();
-  delay(500);
-
-  testtriangles();
-  delay(500);
-
-  mediabuttons();
-  delay(500);
-
-  Serial.println("done");
-  delay(1000);
-*/
-  
-
-/*
-void testlines(uint16_t color) {
-  tft.fillScreen(ST7735_BLACK);
-  for (int16_t x=0; x < tft.width(); x+=6) {
-    tft.drawLine(0, 0, x, tft.height()-1, color);
-  }
-  for (int16_t y=0; y < tft.height(); y+=6) {
-    tft.drawLine(0, 0, tft.width()-1, y, color);
-  }
-
-  tft.fillScreen(ST7735_BLACK);
-  for (int16_t x=0; x < tft.width(); x+=6) {
-    tft.drawLine(tft.width()-1, 0, x, tft.height()-1, color);
-  }
-  for (int16_t y=0; y < tft.height(); y+=6) {
-    tft.drawLine(tft.width()-1, 0, 0, y, color);
-  }
-
-  tft.fillScreen(ST7735_BLACK);
-  for (int16_t x=0; x < tft.width(); x+=6) {
-    tft.drawLine(0, tft.height()-1, x, 0, color);
-  }
-  for (int16_t y=0; y < tft.height(); y+=6) {
-    tft.drawLine(0, tft.height()-1, tft.width()-1, y, color);
-  }
-
-  tft.fillScreen(ST7735_BLACK);
-  for (int16_t x=0; x < tft.width(); x+=6) {
-    tft.drawLine(tft.width()-1, tft.height()-1, x, 0, color);
-  }
-  for (int16_t y=0; y < tft.height(); y+=6) {
-    tft.drawLine(tft.width()-1, tft.height()-1, 0, y, color);
-  }
-}
-
-void testdrawtext(char *text, uint16_t color) {
-  tft.setCursor(0, 0);
-  tft.setTextColor(color);
-  tft.setTextWrap(true);
-  tft.print(text);
-}
-
-void testfastlines(uint16_t color1, uint16_t color2) {
-  tft.fillScreen(ST7735_BLACK);
-  for (int16_t y=0; y < tft.height(); y+=5) {
-    tft.drawFastHLine(0, y, tft.width(), color1);
-  }
-  for (int16_t x=0; x < tft.width(); x+=5) {
-    tft.drawFastVLine(x, 0, tft.height(), color2);
-  }
-}
-
-void testdrawrects(uint16_t color) {
-  tft.fillScreen(ST7735_BLACK);
-  for (int16_t x=0; x < tft.width(); x+=6) {
-    tft.drawRect(tft.width()/2 -x/2, tft.height()/2 -x/2 , x, x, color);
-  }
-}
-
-
-void testfillcircles(uint8_t radius, uint16_t color) {
-  for (int16_t x=radius; x < tft.width(); x+=radius*2) {
-    for (int16_t y=radius; y < tft.height(); y+=radius*2) {
-      tft.fillCircle(x, y, radius, color);
-    }
-  }
-}
-
-void testdrawcircles(uint8_t radius, uint16_t color) {
-  for (int16_t x=0; x < tft.width()+radius; x+=radius*2) {
-    for (int16_t y=0; y < tft.height()+radius; y+=radius*2) {
-      tft.drawCircle(x, y, radius, color);
-    }
-  }
-}
-
-void testtriangles() {
-  tft.fillScreen(ST7735_BLACK);
-  int color = 0xF800;
-  int t;
-  int w = tft.width()/2;
-  int x = tft.height()-1;
-  int y = 0;
-  int z = tft.width();
-  for(t = 0 ; t <= 15; t++) {
-    tft.drawTriangle(w, y, y, x, z, x, color);
-    x-=4;
-    y+=4;
-    z-=4;
-    color+=100;
-  }
-}
-
-void testroundrects() {
-  tft.fillScreen(ST7735_BLACK);
-  int color = 100;
-  int i;
-  int t;
-  for(t = 0 ; t <= 4; t+=1) {
-    int x = 0;
-    int y = 0;
-    int w = tft.width()-2;
-    int h = tft.height()-2;
-    for(i = 0 ; i <= 16; i+=1) {
-      tft.drawRoundRect(x, y, w, h, 5, color);
-      x+=2;
-      y+=3;
-      w-=4;
-      h-=6;
-      color+=1100;
-    }
-    color+=100;
-  }
-}
-
-void tftPrintTest() {
-  tft.setTextWrap(false);
-  tft.fillScreen(ST7735_BLACK);
-  tft.setCursor(0, 30);
-  tft.setTextColor(ST7735_RED);
-  tft.setTextSize(1);
-  tft.println("Hello World!");
-  tft.setTextColor(ST7735_YELLOW);
-  tft.setTextSize(2);
-  tft.println("Hello World!");
-  tft.setTextColor(ST7735_GREEN);
-  tft.setTextSize(3);
-  tft.println("Hello World!");
-  tft.setTextColor(ST7735_BLUE);
-  tft.setTextSize(4);
-  tft.print(1234.567);
-  delay(1500);
-  tft.setCursor(0, 0);
-  tft.fillScreen(ST7735_BLACK);
-  tft.setTextColor(ST7735_WHITE);
-  tft.setTextSize(0);
-  tft.println("Hello World!");
-  tft.setTextSize(1);
-  tft.setTextColor(ST7735_GREEN);
-  tft.print(p, 6);
-  tft.println(" Want pi?");
-  tft.println(" ");
-  tft.print(8675309, HEX); // print 8,675,309 out in HEX!
-  tft.println(" Print HEX!");
-  tft.println(" ");
-  tft.setTextColor(ST7735_WHITE);
-  tft.println("Sketch has been");
-  tft.println("running for: ");
-  tft.setTextColor(ST7735_MAGENTA);
-  tft.print(millis() / 1000);
-  tft.setTextColor(ST7735_WHITE);
-  tft.print(" seconds.");
-}
-
-void mediabuttons() {
-  // play
-  tft.fillScreen(ST7735_BLACK);
-  tft.fillRoundRect(25, 10, 78, 60, 8, ST7735_WHITE);
-  tft.fillTriangle(42, 20, 42, 60, 90, 40, ST7735_RED);
-  delay(500);
-  // pause
-  tft.fillRoundRect(25, 90, 78, 60, 8, ST7735_WHITE);
-  tft.fillRoundRect(39, 98, 20, 45, 5, ST7735_GREEN);
-  tft.fillRoundRect(69, 98, 20, 45, 5, ST7735_GREEN);
-  delay(500);
-  // play color
-  tft.fillTriangle(42, 20, 42, 60, 90, 40, ST7735_BLUE);
-  delay(50);
-  // pause color
-  tft.fillRoundRect(39, 98, 20, 45, 5, ST7735_RED);
-  tft.fillRoundRect(69, 98, 20, 45, 5, ST7735_RED);
-  // play color
-  tft.fillTriangle(42, 20, 42, 60, 90, 40, ST7735_GREEN);
-}
-*/
