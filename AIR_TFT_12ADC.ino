@@ -3,7 +3,8 @@
 #include <Wire.h>
 #include "TC_coeff.h"
 
-// Using the HW SPI interface of ATMEL 328P
+// Using the HW SPI interface of ATMEL 328P -- Note Atmega pin "SS" (Wiring opin 10)  must be configured as OUTPUT even though it might not be used as SlaveSelect. 
+// SPI interface will not function otherwise
 // Connect signal SCL on TFT board to SCK of 328P , pin17, PB5 (SCK) 
 // Connect signal SDA on TFT board to MOSI of 328P, pin15 , PB3(MOSI)
 // only these additional pins need to be defined
@@ -12,9 +13,28 @@
 #define TFT_DC     8 //  This is Data/Command of the TFT, often labeled as A0 on TFT board
 
 // The two LEDS 
-#define LED1_PIN 	10     // aka PB2,SS Wired to RED LED, Also used as slave select pin for the SD card 
-#define LED2_PIN 	17     // aka PC3,A3, Wired to Blue LED, also used for the Servo pulse pin
+#define LED1_PIN 	10     // aka PB2,SS Wired to RED LED -- must be output if SD SPI bus is used -- Hardwired logic in chip.
+#define LED2_PIN 	17     // aka PC3,A3, Wired to Blue LED
 
+#define RotaryKnob_A 2	//aka D2 PD2, Int0
+#define RotaryKnob_B	14	// aka A0,D14,PC0
+#define RotaryKnob_Push 3	// aka D3,PD3,Int1
+
+#define WITH_SD_CARD
+#ifdef WITH_SD_CARD
+
+// NOTE: Make sure SD card is Formatted with FAT16 as discussed in the readme file of the lib. Will not work on Fat32, Exfat,Fat12
+
+#include <Fat16.h>
+// #include <Fat16util.h> // use functions to print strings from flash memory
+
+#define SD_CARD_CS    5   // aka D5,PD5   SD chip select pin.
+SdCard card;        // SD card class element
+Fat16 file;         // FAT class element
+
+#define SD_RECORD_PERiod 54	// every n times trough a complete loop of 7 adc readings , about 1.1 second per loop 
+#define DataFile "N9169K.csv"
+#endif
 
 
 #define VBUS_ADC 7			// ADC7
@@ -25,6 +45,14 @@
 #define CHAR_WIDTH 5    // plus one for gap  
 #define BAR_gap 1       // horizontal gap between two bars
 
+// arrow icon bitmaps which must be stored in flash
+// new lines must start on new bytes
+const uint8_t arrowUp[] PROGMEM = {0x10,0x10,0x38,0x38,0x7C,0x7C,0xFE,0xFE};
+const uint8_t arrowDown[] PROGMEM = {0xFE,0xFE,0x7C,0x7C,0x38,0x38,0x10,0x10};
+
+// defines for arrow icons
+#define ARROW_WIDTH 7
+#define ARROW_HEIGHT 8
 #define BAR_BOT_LEGEND (disp_height -8)
 #define BAR_TOP_LEGEND (8)
 #define BAR_bottom (disp_height-10)  // location of bottom most pixel
@@ -60,20 +88,27 @@ union adc
 
 } ADC_result = {0,0,0,0};
 
-float Temps[ MAX_CHANNEL+1];		// index 0  is cold junction, then ch1, ch2
-#define COLD_JCT_NDX 	0
+// some globals amoing these functions 
+static float Temps[ MAX_CHANNEL+1];		// index 0  is cold junction, then ch1, ch2
 
-#define TREND_HYST 1		// half of the hystery in deg C -- 
+
+
+#define COLD_JCT_NDX 	0  // Cyl1 =1, Cyl2 =2 ,etc
+
+#define TREND_HYST 0.5		// half of the hystery in deg C -- 
 	
 #define CtoF( tC ) ( tC / 0.5555555555 +32)
 #define FtoC(xF ) ( (xF - 32.0) * 0.55555555555)
 
 // in deg F  used for display only 
-#define F_EGT_MAX  1650		  
+#define F_EGT_MAX  1600	  
 #define F_EGT_ZOOM 1200		
 // in deg C -- used in code
-#define C_EGT_MAX  (FtoC(F_EGT_MAX))
-#define C_EGT_ZOOM (FtoC(F_EGT_ZOOM))
+#define C_EGT_MAX  (FtoC(F_EGT_MAX)) 
+#define C_EGT_ZOOM (FtoC(F_EGT_ZOOM)) 
+#define C_EGT_ALARM ( FtoC(1500) )
+
+
 
 /* 
  *  	Draws the scale grid and legend.  Arguments indicate low and high endpoints
@@ -85,8 +120,7 @@ void DrawScale( int low, int high )
 
 	unsigned char y ;
 	int m;
-  
-  // draw scale and grid 
+
 	tft.fillRect( 0,0, BAR_leftMargin,disp_height,ST7735_BLACK);        // clear the text area on the left
 	y = BAR_top;
 	tft.drawFastHLine(BAR_leftMargin -BAR_gap, y , BAR_DISP_width, ST7735_WHITE);
@@ -119,6 +153,7 @@ void DrawScale( int low, int high )
 	for ( int pos = 0; pos<N_BARS; pos++)
 	{
 		int x = pos*(BAR_width+BAR_gap)+BAR_leftMargin;
+
 		tft.drawChar(x+(BAR_width/3),BAR_BOT_LEGEND,'1'+pos,ST7735_WHITE,ST7735_BLACK,1); 
 	}
 	  
@@ -127,6 +162,7 @@ void DrawScale( int low, int high )
 	
 	
 /* Draws a single bar at column "pos" as a fraction of max height*/
+// position 1 is bar column #1	
 	
 void DrawBar( int8_t pos, float height, uint16_t color = ST7735_MAGENTA, signed char trend = 0) 
 {
@@ -164,21 +200,26 @@ void DrawBar( int8_t pos, float height, uint16_t color = ST7735_MAGENTA, signed 
 
   tft.fillRect( x,BAR_bottom - y, BAR_width,y,color);        // draw the bar 
   tft.fillRect( x,0, BAR_width, BAR_height-y+BAR_TOP_LEGEND, ST7735_BLACK);  // erase everytihng above the top 
- 
-	switch (trend)
-	{
-		case 1: // going up
-			tft.drawChar(x+(BAR_width/2)-3,BAR_bottom - y -8 ,0x18,ST7735_RED,ST7735_BLACK,1); 
-			break;
-			
-		case 2:// going down
-			tft.drawChar(x+(BAR_width/2)-3,BAR_bottom - y -8,0x19,ST7735_YELLOW,ST7735_BLACK,1); 
-			break;
-	//	default:  // don't need this -- bar top is already cleared
-	//		tft.drawChar(x+(BAR_width/2)-3,BAR_bottom - y -8,' ',ST7735_YELLOW,ST7735_BLACK,1); 
-			
-			
-	}
+
+  if (y>ARROW_HEIGHT) // only show trend if bar is tall enough
+  {
+  	switch (trend)
+  	{
+  		case 1: // going up
+  		  tft.drawBitmap(x+((BAR_width-ARROW_WIDTH)/2),BAR_bottom-y+1,arrowUp,ARROW_WIDTH,ARROW_HEIGHT,ST7735_RED);
+  			//tft.drawChar(x+(BAR_width/2)-3,BAR_bottom - y -8,0x18,ST7735_RED,ST7735_BLACK,1); 
+  			break;
+  			
+  		case 2:// going down
+  			tft.drawBitmap(x+((BAR_width-ARROW_WIDTH)/2),BAR_bottom-y+1,arrowDown,ARROW_WIDTH,ARROW_HEIGHT,ST7735_BLUE);
+  			//tft.drawChar(x+(BAR_width/2)-3,BAR_bottom - y -8,0x19,ST7735_YELLOW,ST7735_BLACK,1); 
+  			break;
+  	//	default:  // don't need this -- bar top is already cleared
+  	//		tft.drawChar(x+(BAR_width/2)-3,BAR_bottom - y -8,' ',ST7735_YELLOW,ST7735_BLACK,1); 
+  			
+  			
+  	}
+  }
 }
 
 void BarDisplay( int8_t curr_ch , float *Temps, unsigned char trend)
@@ -212,20 +253,21 @@ void BarDisplay( int8_t curr_ch , float *Temps, unsigned char trend)
 }
 
 
-// This is ARDUINO setup function -- called once upon reset
+// This is the ARDUINO setup function -- called once upon reset
 void setup(void) {
 	
-	//uint8_t ret_val;
+	uint8_t ret_val;
 	uint8_t num;
 	
-	Serial.begin(115200);
-	Serial.print("Hello! AIR_TFT_ADC");
+	//Serial.begin(115200);
+	//Serial.print("Hello! AIR_TFT_ADC");
 
 	tft.initR(INITR_BLACKTAB);   // initialize a ST7735S chip, black tab, try different tab settings if the display is not correct
 	tft.fillScreen(ST7735_BLACK);	// clear the screen 
 	tft.setRotation(3);
 	tft.setCursor(0, 0);
-	tft.println("EGT monitor V0.0 ");
+	tft.setTextSize(2);
+	tft.println("EGT monitor\nV0.4 ");
 
 	pinMode(LED1_PIN, OUTPUT);    // RED
 	digitalWrite( LED1_PIN, 0);
@@ -246,8 +288,6 @@ void setup(void) {
 	TWBR = 99;	// for 20Khz clock rate 
 	TWSR |=  1; // == prescale /4
 	
-#ifdef notneeded 
-// TODO: can I delete this initial internal reading and let the loop take care of it ??	
 	Wire.beginTransmission(LTC_2495_ADDR);		
 	Wire.write(0xa0);		// Enable bit only
 	Wire.write(0xC0);		// meassure internal temp
@@ -258,7 +298,7 @@ void setup(void) {
 	// 3 == Other error
 	if (ret_val !=0 )
 	{
-		Serial.print("ADC not responding -- stop!");
+//		Serial.print("ADC not responding -- stop!");
 		digitalWrite( LED1_PIN, 1);
 		
 		tft.println("ADC not responding -- stop!");
@@ -269,7 +309,7 @@ void setup(void) {
 	num = Wire.requestFrom(LTC_2495_ADDR,3);		// this starts a new conversion so that the main loop can read the int temp on the first call
 	if (num != 3 )
 	{
-		Serial.print("ADC not ready with result, STOP! ");
+//		Serial.print("ADC not ready with result, STOP! ");
 		digitalWrite( LED1_PIN, 1);
 		tft.println("ADC not ready with result, STOP!");
 		while (1) ;
@@ -283,42 +323,70 @@ void setup(void) {
 	uint16_t adc_val16 = ADC_result.adc_val_24 >> 6;	// lowest 6 bits are 0's 
 	Temps[COLD_JCT_NDX] = ( adc_val16 * ADC_REFERENCE_V /12.25) -273.0;				// temperature formula from datasheet in Kelvin
 
-	tft.print("Internal temp: ");
-	tft.println(Temps[COLD_JCT_NDX]); 
-// TODO : can I delete the above cold temp reading ?	
-	
-#endif 
+	tft.print("Temp:");
+	tft.print(CtoF( Temps[COLD_JCT_NDX])); 
+	tft.println("F");
+
 	float Vbus_Volt = analogRead(VBUS_ADC) * VBUS_ADC_BW;	// read the battery voltage 
-	tft.print("Battery Voltage: ");
-	tft.println(Vbus_Volt);
+	tft.print("VBatt: ");
+	tft.print(Vbus_Volt);
+	tft.println("V");
 
-	// Delay to read the above messages 	
-	delay (2000);	// after the read above a conversion is started again -- can't talk to the chip again until it's done 
+#ifdef WITH_SD_CARD
+  if (  card.begin(SD_CARD_CS) ) 
+  {
+    if (Fat16::init(&card))
+    {
+	    if ( file.open(DataFile, O_CREAT | O_WRITE | O_APPEND))
+      {
+        file.println("Min,Cold,Cyl1,Cyl2,Cyl3,Cyl4,Cyl5,Cyl6 -- in deg C");
+        file.sync();
+      }
+      else
+    	{
+    		tft.println("No file open");
+    	}
+    }
+    else
+    {
+  	  tft.println("No FAT init");
+    }
+
+  }
+  else
+  {
+      tft.println("No SD init");
+  }
+
+#endif 
+  
+
+
+	// Delay to read the above messages on the screen.
+	delay (8000);	// after the read above a conversion is started again -- can't talk to the chip again until it's done 
 	tft.fillScreen(ST7735_BLACK);	// clear the screen 
+	tft.setTextSize(1);
 
-	Serial.println("exit setup");
-}
-
-
-
-
+ // Serial.println("exit setup");
+  }
 
 // This is the ARDUINO loop execute function, called contineously 
 void loop() 
 { 
 	static int8_t next_ch = MAX_CHANNEL; 
 	static bool prev_zoom = true;
+	static int16_t loopcnt;
 	bool zoom = true;
 	int32_t ADC_cnt; //  32 bit integer so that we can convey 16bits plus a sign 
 	int8_t curr_ch;			   // the current channel data that is beeing processed lags one behind the next channel	
 	int num;
 	unsigned char trend =0;
-
 	
 	// Begin of acquiring TC readings  -- one reading per loop 	
 	// set the channel for the next reading 
 	if ( ++next_ch > MAX_CHANNEL )
-	{
+	{	// we are once around -- start again with the coSerld jucntion
+		loopcnt++;
 		next_ch = COLD_JCT_NDX;
 		Wire.beginTransmission(LTC_2495_ADDR);	
 		Wire.write(0xa0);		// Enable bit only
@@ -348,6 +416,7 @@ void loop()
 			tft.print(" V");
 			tft.setCursor(10, 30);
 			tft.print(" Voltage too low! STOP ");
+			// of course being able to turn off the device would be better solution alltogether
 			while (1);
 		}
 	}
@@ -381,7 +450,7 @@ void loop()
 	// shift out the lower 6 bits that are all 0's and use the 16 bits as positive integer
 	ADC_cnt = (uint16_t) (ADC_result.adc_val_24 >> 6); // it's a positive 16 bit number
 	
-	if (curr_ch == 0 )	// the 'last' conversion was the internal temp (cold junction)
+	if (curr_ch == COLD_JCT_NDX )	// the 'last' conversion was the internal temp (cold junction)
 	{
 		Temps[COLD_JCT_NDX] = 	 (ADC_cnt * ADC_REFERENCE_V /12.25) -273.0;// temperature formula from datasheet in Kelvin
 	}
@@ -393,10 +462,11 @@ void loop()
 		if ( ! (ADC_result.bytes[2] & 0x80) )	// it's a negative 16 bit number 
 		{
 			ADC_cnt = 0;			// upside down connected thermocouple:  read 0 
+			// I could just flip it, but offset errors might be different, so better to get the probes on right	
 		} 
 
 		float TC_mv = ADC_cnt * ADC_Bit_Value * 1000; // in millivolts for coeff table 
-		//Serial.print("TC_mv");
+		//Serial.print("TC_mv: ");
 		//Serial.println(TC_mv); 
 		
 		// depending on the voltage, choose appropriate table as per NIST
@@ -429,29 +499,71 @@ void loop()
 		{	
 			TC_Temp_C += Temps[COLD_JCT_NDX]; // add in the cold junction temp
 			
+			
+			// this trend and peak detection is affected by noisy ADC readings since there is no averaging of the readings
+			// for speed reasons.
+				
 			if ( (TC_Temp_C - TREND_HYST) > Temps[curr_ch] )
+			{
 				trend = 1;		// Rising 
+			}
 			else if ((TC_Temp_C + TREND_HYST) < Temps[curr_ch] )
-				trend = 2;		// Falling
+			{
+				trend = 2;		// Falling 
+			}
 			Temps[curr_ch] = TC_Temp_C;
 		}
 		else
-			Temps[curr_ch] = -10e5;		// If the probe is connected upside down, display a zero bar
+			Temps[curr_ch] = -1;		// If the probe is connected upside down, display a zero bar
 		
 			
 
 	}
+ 
 // end of acquiring TC readings  
 
 	BarDisplay( curr_ch, Temps, trend);
+ 
+  int alarm_flag =0;
+  for (int n = 1; n <= N_BARS; n++ )
+  {
+   
+    if ( Temps[n] > C_EGT_ALARM)
+      alarm_flag++;
+      
+  }
+  
+  if (alarm_flag) 
+    digitalWrite( LED1_PIN, 1);
+  else
+    digitalWrite( LED1_PIN, 0);
+  
 
 	// according to the datasheet of LTC2495/page5 the conversion time in 50/60hz 1x speed mode is 149ms 
 	// communication,display and computation takes 24ms per loop, so we wait 130ms for a total delay of 154 ms
-// TODO: Tune delay with scope
+
+#ifdef WITH_SD_CARD	
+// it is not precise how the time is measured,
+//Todo: use the millis function and get up-time from timer 
+	if (file.isOpen() && (loopcnt % SD_RECORD_PERiod) == 0) 
+    {
+  	  file.print(loopcnt/SD_RECORD_PERiod );file.print(",");
+  	  file.print(Temps[COLD_JCT_NDX]);file.print(",");
+  	  file.print(Temps[1]);file.print(",");
+  	  file.print(Temps[2]);file.print(",");
+  	  file.print(Temps[3]);file.print(",");
+  	  file.print(Temps[4]);file.print(",");
+  	  file.print(Temps[5]);file.print(",");
+  	  file.println(Temps[6]);
+      file.sync();
+  //	  Serial.print("Minute:");
+  //	  Serial.println(loopcnt/SD_RECORD_PERiod ); 
+  	  loopcnt++;
 	
-	
+    }
+#endif	
+	//  Tune delay with scope
 	delay(140);		// this is the fastest the chip can convert in the chosen mode and clock
-	
 
 
 }
