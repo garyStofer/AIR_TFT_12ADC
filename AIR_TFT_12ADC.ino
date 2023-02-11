@@ -10,7 +10,8 @@
 // only these additional pins need to be defined
 #define TFT_CS     9 // Chip select -- Could also use SlaveSelect from HW SPI interface 
 #define TFT_RST    7 // you can also connect this to the Arduino reset, in which case, set this #define pin to -1!
-#define TFT_DC     8 //  This is Data/Command of the TFT, often labeled as A0 on TFT board
+#define TFT_DC     6 //  This is Data/Command of the TFT, often labeled as A0 on TFT board
+
 
 // The two LEDS 
 #define LED1_PIN 	10     // aka PB2,SS Wired to RED LED -- must be output if SD SPI bus is used -- Hardwired logic in chip.
@@ -121,18 +122,21 @@ union  {
 
 #ifdef EGT_MODE
 // in deg F  used for display only 
-	#define F_MAX  1650	  
+	#define F_MAX  1650	
+	#define F_WARN 1500
 	#define F_ZOOM 1200	
 	#define F_ALARM 1550
-#else
-	#define F_MAX  450	  
+#else // All Franklin engines CHT max in Probe hole is 390F
+	#define F_MAX  420	
+	#define F_WARN 365
 	#define F_ZOOM 150
-	#define F_ALARM 400
+	#define F_ALARM 390
 #endif
 
 	
 // in deg C -- used in code
 #define C_MAX  (FtoC(F_MAX)) 
+#define C_WARN (FtoC(F_WARN))
 #define C_ZOOM (FtoC(F_ZOOM)) 
 #define C_ALARM ( FtoC(F_ALARM) )
 
@@ -290,7 +294,17 @@ void BarDisplay( int8_t curr_ch , float *Temps, unsigned char trend)
 	
 
 	if (zoom)
-		DrawBar(curr_ch, (Temps[curr_ch] - C_ZOOM)/(C_MAX - C_ZOOM), ST7735_GREEN, trend);
+	{	
+		uint16_t color = ST7735_GREEN; ;
+
+		if (Temps[curr_ch] > C_ALARM )
+			color = ST7735_RED;
+		else if ( Temps[curr_ch] > C_WARN )
+			color = ST7735_YELLOW;
+		
+				
+		DrawBar(curr_ch, (Temps[curr_ch] - C_ZOOM)/(C_MAX - C_ZOOM), color, trend);
+	}
 	else
 		DrawBar(curr_ch, Temps[curr_ch]/ C_MAX , ST7735_BLUE, trend);	
 	
@@ -305,12 +319,15 @@ void setup(void) {
 	Options.all = 0;
 	Options.bits.BAR_text =1;
 	
+	pinMode(LED1_PIN, OUTPUT);    // PB2,SS Wired to RED LED -- must be output if SD SPI bus is used -- Hardwired logic in chip.
+	digitalWrite( LED1_PIN, 0);
+	
 	//Serial.begin(56700);
 	//Serial.print("Hello! AIR_TFT_ADC");
 
 	tft.initR(INITR_BLACKTAB);   // initialize a ST7735S chip, black tab, try different tab settings if the display is not correct
 re_do:	
-	tft.setRotation(3);
+	tft.setRotation(3);   // 3 for red pcb
 	tft.setCursor(0, 0);
 	tft.setTextSize(2);
 	tft.fillScreen(ST7735_BLACK);	// clear the screen 
@@ -323,13 +340,63 @@ re_do:
 	tft.println("CHT Monitor");
 #endif
 		
-	tft.println("Version 0.7\n");
-
-	pinMode(LED1_PIN, OUTPUT);    // RED
-	digitalWrite( LED1_PIN, 0);
+	tft.println("Version 1.0\n");
 
 
-	Wire.begin();								// initialize the i2C interface as master
+ 
+
+
+	float Vbus_Volt = analogRead(VBUS_ADC) * VBUS_ADC_BW;	// read the battery voltage 
+	tft.print("VBatt: ");
+	tft.print(Vbus_Volt);
+	tft.println("V\n");
+	
+	if (Vbus_Volt < 6.6)	// 2 LI-ion cells just about empty
+	{
+		tft.println("Voltage too low.");
+		delay( 500 ); 
+		goto re_do;	  // do not start SD card writes 
+	}
+
+ 
+ #ifdef WITH_SD_CARD
+ if (!file.isOpen()   )
+ {
+  if (  card.begin(SD_CARD_CS) ) 
+  {
+    if (Fat16::init(&card))
+    {
+      if ( file.open(DataFile, O_CREAT | O_WRITE | O_APPEND))
+      {
+        if (Options.bits.EGT_cht )
+          file.print("EGT");
+        else 
+          file.print("CHT");
+          
+        file.println(" Monitor in deg F"); // header indicates new run
+        file.print("Battery Voltage: ");file.println( Vbus_Volt );
+        file.println("Time,#1,#2,#3,#4,#5,#6,Delta"); // header indicates new run
+        file.sync();
+      }
+      else
+      {
+        tft.println("NoFileOpen");
+      }
+    }
+    else
+    {
+      tft.println("NoFATinit");
+    }
+
+  }
+  else
+  {
+      tft.println("NoSDinit");
+  }
+ }
+#endif 
+	
+	Wire.begin();						// initialize the i2C interface as master
 	//Wire.setClock( 10000); 			//This call seems to do nothing -- so I write the HW registers diectly
 	// setting a lower i2c clock frequency,  F_SCL = F_CPU/ 16 + (2*TWBR*TW_Prescale)
 	TWBR = 99;	// for 20Khz clock rate 
@@ -370,47 +437,12 @@ re_do:
 	tft.print(CtoF( Temps[COLD_JCT_NDX])); 
 	tft.println("F\n");
 
-	float Vbus_Volt = analogRead(VBUS_ADC) * VBUS_ADC_BW;	// read the battery voltage 
-	tft.print("VBatt: ");
-	tft.print(Vbus_Volt);
-	tft.println("V\n");
 
 	
 
-#ifdef WITH_SD_CARD
-  if (  card.begin(SD_CARD_CS) ) 
-  {
-    if (Fat16::init(&card))
-    {
-	    if ( file.open(DataFile, O_CREAT | O_WRITE | O_APPEND))
-      {
-		if (Options.bits.EGT_cht )
-			file.println("EGT Monitor in deg F");	// header indicates new run
-		else 
-			file.println("CHT Monitor in deg F");	// header indicates new run
-		
-		file.println("Time,#1,#2,#3,#4,#5,#6");	// header indicates new run
-        file.sync();
-      }
-      else
-    	{
-    		tft.println("NoFileOpen");
-    	}
-    }
-    else
-    {
-  	  tft.println("NoFATinit");
-    }
 
-  }
-  else
-  {
-      tft.println("NoSDinit");
-  }
-
-#endif 
   
-
+ 
 
 	// Delay to read the above messages on the screen.
 	delay (2500);	// after the read above a conversion is started again -- can't talk to the chip again until it's done 
@@ -440,8 +472,7 @@ void loop()
 	int8_t next_ch;
 	int32_t ADC_cnt; //  32 bit integer so that we can convey 16bits plus a sign 
 	static int  loopcnt =0;
-
-		
+	static float MAX_temp=0;	// long term max temperature to be recorded to SD card file upon shut down
 
 	
 	// according to the datasheet of LTC2495/page5 the conversion time in 50/60hz 1x speed mode is 149ms -- we wait ~200ms 
@@ -450,8 +481,33 @@ void loop()
 	
 	time_ms = millis(); 
 	time_ms += 170;			// next measurement cycle 
+
 	
- 
+	// do the Vbus reading and disconnect the SD card when battery is too low
+	// requires supercap on Vbattery 	
+	float Vbus_Volt = analogRead(VBUS_ADC) * VBUS_ADC_BW;	// read the battery voltage 
+		
+	if (Vbus_Volt < 6.4  )
+	{
+		digitalWrite( LED1_PIN, 0);		// reduce current draw on the way out, so that the file.close can happen on the supercap
+		digitalWrite( LED2_PIN, 0);
+	
+		if ( file.isOpen() )			// Close the SD card cleanly
+		{
+			file.print("End  MAX-temp: ");
+			file.println (CtoF(MAX_temp));
+			file.close();
+		}
+		
+		tft.fillScreen(ST7735_BLACK);
+		tft.setCursor(10, 10);
+		tft.print(Vbus_Volt);
+		tft.print(" V");
+		tft.setCursor(10, 30);
+		tft.print("Voltage low!\n STOP!");
+		// of course being able to turn off the device would be better solution alltogether
+		while (1);
+	}
 	
 	// Begin of acquiring TC readings  -- one reading per loop 	
 	// latch the previous reading and set the channel for the next  
@@ -466,30 +522,16 @@ void loop()
 		uint8_t ret_val = Wire.endTransmission( 0 ); // ending with ReStart instead of STOP so that we still can read the result from the last conversion
 		// 0 == success, 1 == NACK upon transmit of address, 2 == NACK upon transmit of DATA, 3 == Other error
 
-	if (ret_val )
+		if (ret_val )
 		{
 			digitalWrite( LED1_PIN, 1);
 			tft.fillScreen(ST7735_BLACK);
-			tft.setCursor(10, 10);
+			tft.setCursor(0, 10);
 			tft.println("ADC not responding");
 			return;		// loop until problem corrected 
 		}
 		
-		// do the Vbus reading at the same time as the cold junction reading
-		float Vbus_Volt = analogRead(VBUS_ADC) * VBUS_ADC_BW;	// read the battery voltage 
-		// Check the power bus voltage
-			
-		if (Vbus_Volt < 6.2 )
-		{
-			tft.fillScreen(ST7735_BLACK);
-			tft.setCursor(10, 10);
-			tft.print(Vbus_Volt);
-			tft.print(" V");
-			tft.setCursor(10, 30);
-			tft.print(" Voltage too low!\n STOP ");
-			// of course being able to turn off the device would be better solution alltogether
-			return;
-		}
+
 
 	}
 	else
@@ -510,8 +552,8 @@ void loop()
 	{
 		digitalWrite( LED1_PIN, 1);
 		tft.fillScreen(ST7735_BLACK);
-		tft.setCursor(10, 10);
-		tft.println("ADC not ready!");
+		tft.setCursor(0, 10);
+		tft.println("ADC not ready");
 		return;
 	}
 
@@ -543,21 +585,21 @@ void loop()
 			
 
 	
-		float * tab;		// pointer to the coeff table 
+		float * table;		// pointer to the coeff table 
 		if (Options.bits.EGT_cht )
 		{	
 			//Serial.println("K-Type"); 
 			// depending on the voltage, choose appropriate table as per NIST
 			if (TC_mv < 20.644)		// threshold of table 1 to 2
-				tab = K_TC_coeff0_500;
+				table = K_TC_coeff0_500;
 			else
-				tab = K_TC_coeff500_plus; 
+				table = K_TC_coeff500_plus; 
 		}
 		else
 		{
 			//Serial.println("J-Type");
 			//tab =J_TC_coeff0_760; 
-			tab = K_TC_coeff0_500;	// using K-type CHT probes since  J Types are not available 
+			table = K_TC_coeff0_500;	// using K-type CHT probes since  J Types are not available 
 		}
 
 		// calculate the thermocouple t90 from thermal EMF per NIST polynomial
@@ -568,11 +610,11 @@ void loop()
 			if ( n == 0 )
 			{
 				EE = TC_mv;
-				TC_Temp_C = tab[0];
+				TC_Temp_C = table[0];
 			}
 			else
 			{
-				TC_Temp_C += EE * tab[n];
+				TC_Temp_C += EE * table[n];
 				EE *= TC_mv;	// next power 
 			}
 
@@ -609,14 +651,14 @@ void loop()
   
   if ( curr_ch ==  0)	// update min, max and alarm once around the loop
   {
-	  float min,max,temp;
+	float min,max,temp;
 
- 
- 
-	  for (n = 1, min=9999, max =0; n <= MAX_CHANNEL; n++ )
-	  {
+
+
+	for (n = 1, min=9999, max =0; n <= MAX_CHANNEL; n++ )
+	{
 		temp = Temps[n];
-		
+
 		if (temp > max ) 
 		{
 			max = temp;
@@ -628,12 +670,21 @@ void loop()
 			min = temp;
 			min_ndx =n;
 		}
-	  }
+	}
+	  
+	if (max > MAX_temp)
+		MAX_temp = max;  // will get saved to SD card upon end of flight
+			
 
 	if (max > C_ALARM) 
 		digitalWrite( LED1_PIN, 1);
 	else
 		digitalWrite( LED1_PIN, 0);
+	
+	if (max > C_WARN) 
+		digitalWrite( LED2_PIN, 1);
+	else
+		digitalWrite( LED2_PIN, 0);
 		
 	if (digitalRead(RotaryKnob_Push) == 0 )
 	{
@@ -723,20 +774,24 @@ void loop()
 	if (file.isOpen() && loopcnt%5 == 0 && curr_ch ==0 ) 
 	{
 		
-	  unsigned short secs = time_ms/1000;
-		
-	  file.print(secs/60 );file.print(":");		// minutes and seconds since start
-	  file.print(secs%60 );file.print(",");	
-   	  file.print(CtoF(Temps[1]),0);file.print(",");
-  	  file.print(CtoF(Temps[2]),0);file.print(",");
-  	  file.print(CtoF(Temps[3]),0);file.print(",");
-  	  file.print(CtoF(Temps[4]),0);file.print(",");
-  	  file.print(CtoF(Temps[5]),0);file.print(",");
-  	  file.println(CtoF(Temps[6]),0);
-      file.sync();
+		unsigned short secs = time_ms/1000;
+		if (secs/60 <10 )
+			file.print("0");
+		file.print(secs/60 );file.print(":");		// minutes and seconds since start
+		if (secs%60 <10 )
+			file.print("0");
+		file.print(secs%60 );file.print(",");	
+		file.print(CtoF(Temps[1]),0);file.print(",");
+		file.print(CtoF(Temps[2]),0);file.print(",");
+		file.print(CtoF(Temps[3]),0);file.print(",");
+		file.print(CtoF(Temps[4]),0);file.print(",");
+		file.print(CtoF(Temps[5]),0);file.print(",");
+		file.print(CtoF(Temps[6]),0);file.print(",");
+		file.println(CtoF(delta),0);
+		file.sync();
 
-  	  loopcnt++;
-	
+		loopcnt++;
+
     }
 #endif	
 			
