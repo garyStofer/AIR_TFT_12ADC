@@ -1,46 +1,26 @@
+#include "BoardPins.h"
 #include <TFT.h>    // This further includes Adafruit_GFX and Adafruit_ST7735 from C:/Program Files/Arduino/libraries/tft/utility
 #include <SPI.h>	// SPI for the SD  card 
 #include <Wire.h>	// I2C for the TFT 
 #include "TC_coeff.h"
+#include "build_opts.h"
+#include "Encoder.h"
 
-// Using the HW SPI interface of ATMEL 328P -- Note Atmega pin "SS" (Wiring pin 10)  must be configured as OUTPUT even though it might not be used as SlaveSelect. 
-// SPI interface will not function otherwise
-// Connect signal SCL on TFT board to SCK of 328P , pin17, PB5 (SCK) 
-// Connect signal SDA on TFT board to MOSI of 328P, pin15 , PB3(MOSI)
-// only these additional pins need to be defined
-#define TFT_CS     9 // Chip select -- Could also use SlaveSelect from HW SPI interface 
-#define TFT_RST    7 // you can also connect this to the Arduino reset, in which case, set this #define pin to -1!
-#define TFT_DC     6 //  This is Data/Command of the TFT, often labeled as A0 on TFT board
-
-
-// The two LEDS 
-#define LED1_PIN 	10     // aka PB2,SS Wired to RED LED -- must be output if SD SPI bus is used -- Hardwired logic in chip.
-#define LED2_PIN 	17     // aka PC3,A3, Wired to Blue LED
-
-#define RotaryKnob_A 2	//aka D2 PD2, Int0
-#define RotaryKnob_B	14	// aka A0,D14,PC0
-#define RotaryKnob_Push 3	// aka D3,PD3,Int1
-
-
+//#define SIMUL
 #define WITH_SD_CARD
 #ifdef WITH_SD_CARD
 
 // NOTE: Make sure SD card is Formatted with FAT16 as discussed in the readme file of the lib. Will not work on Fat32, Exfat,Fat12
 
 #include <Fat16.h>
-//#include <Fat16util.h> // use functions to print strings from flash memory
-
-#define SD_CARD_CS    5   // aka D5,PD5   SD chip select pin.
-
 #define SD_RECORD_PERiod 25	// every n times trough a complete loop of 7 adc readings , 1.4 second per loop,  22 ~ 30 seconds
 
-// change the filename according to which Aircraft this is installed in
-//#define DataFile "N9169K.csv"
-#define DataFile "Ntest.csv"
+// change the filename according to which Aircraft this is installed, in file build_opts.h
+#define DataFile N_NUMBER".csv"
 #endif // with SD_Card
 
 
-#define VBUS_ADC 7			// ADC7 on atmega 328P
+//#define VBUS_ADC 7			// ADC7 on atmega 328P
 #define VBUS_ADC_BW  (5.0*(14+6.8)/(1024*6.8))	//Bit weight of ADC7 using a voltage divider 14.0K and 6.8k to gnd.
 
 // defines for the bar graph
@@ -105,8 +85,8 @@ typedef struct {
 	float delta;
 }Params_t ;
 
-Params_t EGT = {1650,1500,1200,1550,LTC_2495_ADDR_EGT};		// all temps in deg F except Cold Junction
-Params_t CHT = {420,365,150,390,LTC_2495_ADDR_CHT};				// ""
+Params_t EGT = {1650,1525,1200,1575,LTC_2495_ADDR_EGT};		// all temps in deg F except Cold Junction
+Params_t CHT = {420,365,200,390,LTC_2495_ADDR_CHT};				// ""
 
 
 
@@ -236,12 +216,12 @@ void DrawBar( int8_t pos, float height, uint16_t color = ST7735_MAGENTA, signed 
   	switch (trend)
   	{
   		case 1: // going up
-  		  tft.drawBitmap(x+((BAR_width-ARROW_WIDTH)/2),BAR_bottom-y+1,arrowUp,ARROW_WIDTH,ARROW_HEIGHT,ST7735_YELLOW);
+  		  tft.drawBitmap(x+((BAR_width-ARROW_WIDTH)/2),BAR_bottom-y+1,arrowUp,ARROW_WIDTH,ARROW_HEIGHT,ST7735_BLACK);
   			//tft.drawChar(x+(BAR_width/2)-3,BAR_bottom - y -8,0x18,ST7735_RED,ST7735_BLACK,1); 
   			break;
   			
   		case 2:// going down -- Note BLUE on the blow non zoomed bar will not be visible 
-  			tft.drawBitmap(x+((BAR_width-ARROW_WIDTH)/2),BAR_bottom-y+1,arrowDown,ARROW_WIDTH,ARROW_HEIGHT,ST7735_YELLOW);
+  			tft.drawBitmap(x+((BAR_width-ARROW_WIDTH)/2),BAR_bottom-y+1,arrowDown,ARROW_WIDTH,ARROW_HEIGHT,ST7735_BLACK);
   			//tft.drawChar(x+(BAR_width/2)-3,BAR_bottom - y -8,0x19,ST7735_YELLOW,ST7735_BLACK,1); 
   			break;
   	//	default:  // don't need this -- bar top is already cleared
@@ -358,6 +338,9 @@ bool init_ADC(Params_t *p )
 // todo: change type of return value to what Wire.endtransmission returns
 int8_t ADC_InitNextConversion (Params_t *p, uint8_t next_ch )
 {
+#ifdef SIMUL
+	return 0;
+#endif
 	if ( p == NULL )
 		Wire.beginTransmission(LTC_2495_GLOBAL_ADDR);	 // global address of All ADCs to set next channel in parallel
 	else	
@@ -385,8 +368,12 @@ int8_t  ADC_AquireConversion( Params_t *p, int8_t this_ch )
 		
 	if (this_ch > MAX_CHANNEL )
 		return 0;
+#ifdef SIMUL
+	p->Temps[this_ch] = 220;	
+	return 0;
+#endif
 	
-	// reading the 3 bytes from the chip triggers a new convesrion cycle -- Must keep the bus in "Restart" mode otyherwise the
+	// reading the 3 bytes from the chip triggers a new conversion cycle -- Must keep the bus in "Restart" mode otyherwise the
 	// end of the first read with a STOP condition will trigger an unwanted conversion cycle on the second ADC.
 	// So we read all ADC's by leaving the bus in the "RESTART" state -- 3rd argument below == false
  	if (Wire.requestFrom(p->ADCaddress,3,false) != 3 )	// latches the last conversion data and restarts new conversion immediately
@@ -399,6 +386,7 @@ int8_t  ADC_AquireConversion( Params_t *p, int8_t this_ch )
 			tft.print( F("CHT "));
 		else
   		tft.print( F("EGT "));
+		
 		tft.println(F("ADC not ready"));
 
 		return 1;
@@ -585,7 +573,7 @@ void UpdateDisplay ( Params_t *p, int8_t this_ch, unsigned int loop_cnt)
 				if ( p->Trend[this_ch] == 1 )
 					tft.drawBitmap(TEXT_trendCOL,line,arrowUp,ARROW_WIDTH,ARROW_HEIGHT,ST7735_RED);
 				else if (p->Trend[this_ch] == 2 )
-					tft.drawBitmap(TEXT_trendCOL,line,arrowDown,ARROW_WIDTH,ARROW_HEIGHT,ST7735_GREEN);
+					tft.drawBitmap(TEXT_trendCOL,line,arrowDown,ARROW_WIDTH,ARROW_HEIGHT,ST7735_BLUE);
 
 			}
 	
@@ -620,26 +608,29 @@ void setup(void) {
 
 	
 	pinMode(LED1_PIN, OUTPUT);    // PB2,SS Wired to RED LED -- must be output if SD SPI bus is used -- Hardwired logic in chip.
-	pinMode(LED2_PIN, OUTPUT);    // PB2,SS Wired to RED LED -- must be output if SD SPI bus is used -- Hardwired logic in chip.	
+	pinMode(LED2_PIN, OUTPUT);    //  	
 	digitalWrite( LED1_PIN, 0);
+	digitalWrite( LED2_PIN, 0);
  
-
+  EncoderInit( Enc_A_PIN, Enc_B_PIN, Enc_PRESS_PIN );
 
 	
 	//Serial.begin(56700);
 	//Serial.print("Hello! AIR_TFT_ADC");
-
+	digitalWrite( LED2_PIN, 1);	 // blue led on during init
 	tft.initR(INITR_BLACKTAB);   // initialize a ST7735S chip, black tab, try different tab settings if the display is not correct
 re_do:
-	digitalWrite( LED2_PIN, 1);	 // blue led on during init
+	
 	tft.setRotation(3);   // 3 for red pcb
 	tft.setCursor(0, 0);
 	tft.setTextSize(2);
 	tft.fillScreen(ST7735_BLACK);	// clear the screen 
-
+	digitalWrite( LED2_PIN, 0);
  
 	tft.println(F("EGT/CHT\nMonitor"));		
-	tft.println(F("Version 1.1"));
+	tft.println(F("Version 1.2"));
+ digitalWrite( LED1_PIN, 1);
+ 
  
 	float Vbus_Volt = analogRead(VBUS_ADC) * VBUS_ADC_BW;	// read the battery voltage 
 	tft.print(F("VBatt: "));
@@ -654,6 +645,40 @@ re_do:
 	}
 
  
+
+	
+	Wire.begin();						// initialize the i2C interface as master
+	//Wire.setClock( 10000); 			//This call seems to do nothing -- so I write the HW registers diectly
+	// setting a lower i2c clock frequency,  F_SCL = F_CPU/ 16 + (2*TWBR*TW_Prescale)
+	TWBR = 99;	// for 20Khz clock rate 
+	TWSR |=  1; // == prescale /4
+	
+#ifdef SIMUL
+	Options.bits.CHT = true;
+	Options.bits.EGT = true;
+	CHT.Temps[COLD_JCT_NDX] = 21; 
+	EGT.Temps[COLD_JCT_NDX] = 21; 
+#else
+	Options.bits.CHT = init_ADC( &CHT);
+	Options.bits.EGT = init_ADC( &EGT);
+#endif
+	
+	digitalWrite( LED2_PIN, 0);
+	
+	if ( Options.bits.CHT == false  )
+		tft.println( F("No CHT ADC!"));
+	if ( Options.bits.EGT == false  )
+		tft.println( F("No EGT ADC!"));
+	
+	if (Options.bits.EGT == false && Options.bits.CHT == false  )
+	{
+	//		Serial.print("No ADC is responding -- stop!");
+		digitalWrite( LED1_PIN, 1);
+		tft.println( F("No ADCs found"));
+		delay( 1500 ); 
+		goto re_do;
+	}
+	
  #ifdef WITH_SD_CARD
  if (!file.isOpen()   )
  {
@@ -686,33 +711,6 @@ re_do:
   }
  }
 #endif 
-	
-	Wire.begin();						// initialize the i2C interface as master
-	//Wire.setClock( 10000); 			//This call seems to do nothing -- so I write the HW registers diectly
-	// setting a lower i2c clock frequency,  F_SCL = F_CPU/ 16 + (2*TWBR*TW_Prescale)
-	TWBR = 99;	// for 20Khz clock rate 
-	TWSR |=  1; // == prescale /4
-	
-	Options.bits.CHT = init_ADC( &CHT);
-	Options.bits.EGT = init_ADC( &EGT);
-
-	
-	digitalWrite( LED2_PIN, 0);
-	
-	if ( Options.bits.CHT == false  )
-		tft.println( F("No CHT ADC!"));
-	if ( Options.bits.EGT == false  )
-		tft.println( F("No EGT ADC!"));
-	
-	if (Options.bits.EGT == false && Options.bits.CHT == false  )
-	{
-	//		Serial.print("No ADC is responding -- stop!");
-		digitalWrite( LED1_PIN, 1);
-		tft.println( F("No ADCs found!"));
-		delay( 1500 ); 
-		goto re_do;
-	}
-
 	
 // there is at least one ADC present or we don't get here
 	if ( Options.bits.CHT )
@@ -752,8 +750,12 @@ re_do:
 // This is the ARDUINO loop execute function, called contineously 
 void loop() 
 { 
-	int8_t adc_error=0;
-	static unsigned long time_ms_next =0;
+	int8_t adc_error = 0;
+	static unsigned long time_ms_next = 0;
+	static unsigned char prev_short_press = 0;
+	static unsigned char prev_long_press = 0;
+	static char prev_enc_cnt  = 1;
+	
 	// The curr_ch is the channel for which we can read the data in this loop instance for which the conversion was started in the prior loop
 	// The next_ch is the channel for which the ADC conversion gets started in this loop intance. 
  
@@ -791,14 +793,71 @@ void loop()
 		while (1);
 	}
 	
-	// change of display mode -- text or bars
-	if (digitalRead(RotaryKnob_Push) == 0 )
+	// change of display mode -- text or bars / cht/egt /time
+	if ( LongPressCnt != prev_long_press || ShortPressCnt != prev_short_press ||  EncoderCnt != prev_enc_cnt)
+	{	
+		tft.fillScreen(ST7735_BLACK);					// clear the screen 
+		if (	EncoderCnt != prev_enc_cnt)
+		{
+				tft.setCursor(10, 40);
+				tft.setTextSize(2);
+				tft.setTextColor( ST7735_YELLOW,ST7735_BLACK );
+	
+			if ( EncoderCnt > prev_enc_cnt )
+			{
+				// display the time on the display and delay a few seconds 
+				tft.print(F("\nTime:"));
+				tft.print(time_ms_next/60000);
+				tft.println(F(" min"));
+
+			}
+			
+			else
+			{
+				
+				tft.print(F("\nVolt: "));
+				tft.print(Vbus_Volt);
+				tft.println(F("V"));
+			}
+			
+			prev_enc_cnt = EncoderCnt;
+			delay(2500);
+			tft.fillScreen(ST7735_BLACK);					// clear the screen 
+		}
+			
+		if ( LongPressCnt != prev_long_press)
+		{
+			prev_long_press = LongPressCnt;
+			Options.bits.BAR_text = !Options.bits.BAR_text; // toggle display bars or text
+		}
+		else
+		{
+			prev_short_press = ShortPressCnt;
+			if (Options.bits.EGT && Options.bits.CHT )		// If both ADC's are connected switch the display to the other -- else no action on long press
+			{
+				Options.bits.EGT_cht = !Options.bits.EGT_cht; // switch to the other one
+			//	curr_ch = MAX_CHANNEL;  // so it starts from the cold_junction reading again
+			}	
+		}
+	
+		if (Options.bits.BAR_text)						// redisplay the grid
+		{
+			tft.setTextSize(1);
+			DispGrid((Options.bits.EGT_cht) ? &EGT :&CHT );
+		}
+		else
+			tft.setTextSize(2);
+	}
+	
+	
+#ifdef kjjkuuhjlkjkjlkjlkjlkj	
+	if (digitalRead(Enc_PRESS_PIN ) == 0 )
 	{
 		unsigned long t = millis();
 		
 		tft.fillScreen(ST7735_BLACK);					// clear the screen 
 	
-		while (digitalRead(RotaryKnob_Push) == 0 )	// wait until button is released
+		while (digitalRead(Enc_PRESS_PIN ) == 0 )	// wait until button is released
 		{
 		}
 		// button press released
@@ -826,12 +885,12 @@ void loop()
 	
 		delay(100) ; // in case of a bounce
 	}
-	
+#endif 	
 	// according to the datasheet of LTC2495/page5 the conversion time in 50/60hz 1x speed mode is 149ms -- we wait ~200ms 
 	if (millis() < time_ms_next  )	// wait for next measure interval 
 		return; 
 	
-	time_ms_next = millis() +154; // next measurement cycle 
+	time_ms_next = millis() +155; // next measurement cycle 
  
 	// Begin of acquiring TC readings  -- one reading per loop 	
 	// latch the previous reading and setup the channel for the next conversion 
