@@ -10,8 +10,8 @@
 #include "Arduino.h"
 #include "build_opts.h"
 
-
-#define Enc_DIRECTION (-1)  // polarity of encoder , either -1 or +1 depending on the phase relation of the two signals in regard of the turn direction
+#define MAX_MENU_ITEMS 2 // 0 based
+#define ENCODER_DETENT_SCALE 3 // how many clicks the knob needs to be turned to register one increment for the menu system
 
 #define LONGPRESS_TIMEOUT 50000 // Note: not in milli seconds since this is used in a SW while loop timer
 #ifdef  __cplusplus
