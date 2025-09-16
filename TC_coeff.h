@@ -1,8 +1,8 @@
 // Coefficients for inverse polinomial to compute temp from voltage in millivolts. 
 // Note: ITS90 coefficient table is given for uV therefore the exponenst are different 
-#define N_poly 9	//  see table below, 7 deep is all thatb Jtype needs -- geed enough for K as well 
+#define N_poly 9	//  see table below, 7 deep is all that Jtype needs -- geed enough for K as well 
 // K-Type coeff
-
+/*
 float J_TC_coeff0_760[] = {  // table for J type in the ranhge of 0-760C given for millivolts 
 		0.0,
 		1.978425e+1,	
@@ -15,7 +15,7 @@ float J_TC_coeff0_760[] = {  // table for J type in the ranhge of 0-760C given f
 		0.000000E+00,
 		0.000000E+00,
 };
-
+*/
 
 
 // this table should only be used up to 20mv , 0 to 500C
