@@ -1,7 +1,7 @@
 /* This file controls the build-time features */
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  BUILD OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~//
 #include "BoardPins.h"
-
+//#define SIMUL  // simulastes the ADC - for testing without the ADC hardware
 #define N_NUMBER "N9169K"
 #define WITH_SD_CARD	
 #define LCD_ROTATION 3 // for red pcb

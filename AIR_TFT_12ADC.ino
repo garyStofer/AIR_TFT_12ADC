@@ -6,8 +6,8 @@
 #include "build_opts.h"
 #include "Encoder.h"
 
-#define VERSION "Version 1.6"
-//#define SIMUL  // simulastes the ADC - for testing without the ADC hardware
+#define VERSION "Version 1.9"
+
 
 #ifdef WITH_SD_CARD
 
@@ -304,12 +304,17 @@ void BarDisplay( int8_t curr_ch , Params_t *p)
 			color = ST7735_RED;
 		else if ( p->Temps[curr_ch] > p->F_WARN )
 			color = ST7735_YELLOW;
-		else color = ST7735_GREEN;
+		else if (p == &CHT )
+			color = ST7735_CYAN ; // darker green
+		else
+			color = ST7735_GREEN;
 		
 		DrawBar(curr_ch, (p->Temps[curr_ch] - f_zoom)/f_range, color, trend);
 	}
 	else
 		DrawBar(curr_ch, p->Temps[curr_ch]/ p->F_MAX , ST7735_BLUE, trend);	
+	 // DrawBar(curr_ch, p->Temps[curr_ch]/ p->F_MAX , 0x0600, trend);	 a darker greem
+	
 	
 }
 
@@ -604,6 +609,9 @@ void Calc_min_max_delta_alarms ( Params_t *p , int8_t this_ch, unsigned int loop
 			digitalWrite( LED2_PIN, 1);
 		
 		p->delta = p->Temps[p->max_ndx] - p->Temps[p->min_ndx];
+		
+		if (CHT.Temps[AUX_CHANNEL_NDX] <32  ) // carb ice 
+			digitalWrite( LED1_PIN, 1);					// light up the left LED -- should really be a 3rd blue LED instead 
 	}
 	
 	if (this_ch == 4 )  // make the LEDS blink
@@ -620,8 +628,7 @@ void storeDataToFile ( Params_t *p , bool ADC_present )
 {	
 	if (ADC_present )
 	{
-// Change back to start at 1 after debugging OAT abnomaly 
-		for (int i =0; i<= MAX_EGT_CHT_CHANNEL; i++ )
+		for (int i =1; i<= MAX_EGT_CHT_CHANNEL; i++ )
 		{
 			file.print(p->Temps[i],0);file.write_P(PSTR(","));
 		}
@@ -653,18 +660,26 @@ void setup(void) {
 	
 	//Serial.begin(56700);
 	//Serial.print("Hello! AIR_TFT_ADC");
+re_do:
 	digitalWrite( LED2_PIN, 1);	 // blue led on during init
 	tft.initR(INITR_BLACKTAB);   // initialize a ST7735S chip, black tab, try different tab settings if the display is not correct
-re_do:
+//	tft.initR(INITR_REDTAB); 
+//	tft.initR(INITR_GREENTAB); 
+//re_do:
 	
 	tft.setRotation(LCD_ROTATION);   // 3 for red pcb, 1 for other
 	tft.setCursor(0, 0);
 	tft.setTextSize(2);
+	
 	tft.fillScreen(ST7735_BLACK);	// clear the screen 
+
+	
 	digitalWrite( LED2_PIN, 0);
+	
  
 	tft.println(F("EGT/CHT\nMonitor"));		
 	tft.println(F(VERSION));
+
   digitalWrite( LED1_PIN, 1);
  
  
@@ -680,7 +695,6 @@ re_do:
 		goto re_do;	  // do not start SD card writes 
 	}
 
- 
 
 	
 	Wire.begin();						// initialize the i2C interface as master
@@ -729,7 +743,7 @@ re_do:
 	      file.println( F("\nCHT/EGT Monitor in deg F")); // header indicates new run
 				file.println( VERSION );	
         file.print( F("Battery Voltage: ")); file.println( Vbus_Volt );
-        file.println( F("Time,#E1,#E2,#E3,#E4,#E5,#E6,E_Delta,#C1,#C2,#C3,#C4,#C5,#C6,C_Delta,AUX1,AUX2,"));  
+        file.println( F("Time,#E1,#E2,#E3,#E4,#E5,#E6,E_Delta,#C1,#C2,#C3,#C4,#C5,#C6,C_Delta,Oil,Carb,"));  
         file.sync();
       }
       else
@@ -829,10 +843,9 @@ void loop()
 		while (1);
 	}
 	
-				if (millis() < time_ms_next  )	// wait for next measure interval 
-				return; 
-			
-				time_ms_next = millis() +155; // next measurement cycle 
+	if (millis() < time_ms_next  )	// wait for next measure interval 
+	return; 
+ 
 		
 	// change of display mode -- text or bars / cht/egt /time  
 	// this must be done before the wait for new ADC reading or else there is a delay in the response to user input.
@@ -854,66 +867,48 @@ void loop()
 			if (Options.bits.BAR_text)						// re-display the grid
 				DispGrid((Options.bits.EGT_cht) ? &EGT :&CHT );
 			else
-				tft.fillScreen(ST7735_BLACK);					// or clear the screen for text disaplay
+				tft.fillScreen(ST7735_BLACK);					// or clear the screen for text display
 			
 			
 		}	
 		else	if (enc_cnt == 2 ) //  status and aux ch display  
 		{
-			if (enc_cnt != prev_enc_cnt)							// first time , need to prepare the display for text display 
+	//		if (enc_cnt != prev_enc_cnt)							// first time , need to prepare the display for text display 
 			{
 					tft.fillScreen(ST7735_BLACK);					// clear the screen 
 					tft.setTextSize(2);
 					tft.setTextColor( ST7735_YELLOW,ST7735_BLACK );
 					prev_enc_cnt =enc_cnt;
 			}
-			tft.setCursor(0, 10);
-			tft.print(F("Time: "));	tft.print(time_ms_next/60000);tft.println(F(" min"));
-			tft.print(F("Volt: "));	tft.print(Vbus_Volt); tft.println(F("V "));
-			tft.print(F("Aux1: "));	tft.print(EGT.Temps[AUX_CHANNEL_NDX],0);   tft.println( F("F "));
-			tft.print(F("Cold: "));	tft.print(CtoF( EGT.Temps[COLD_JCT_NDX])); 	tft.println(F("F "));
-			tft.print(F("Aux2: "));	tft.print(CHT.Temps[AUX_CHANNEL_NDX],0);	tft.println(F("F "));
-			tft.print(F("Cold: "));	tft.print(CtoF( CHT.Temps[COLD_JCT_NDX])); 	tft.println(F("F "));
 
-			prev_long_press = LongPressCnt; 	// clear these inputs while in status display
-			prev_short_press = ShortPressCnt;// ""
 		}
 	
 
 		prev_enc_cnt = enc_cnt;									// record that we did the init of the screen 
 	}
-	else if (enc_cnt != 2 )		// encoder was not turned and was not on status display
+	else if (enc_cnt == 0 || enc_cnt ==1)		// encoder was not turned and is on CHT or EGT display check shortpress to switch to text/bar disp
 	{
 		if ( ShortPressCnt != prev_short_press )	// short press of button switches between BAR and text display
 		{
 		
 			Options.bits.BAR_text = !Options.bits.BAR_text; // toggle display bars or text
-			
+							
 			if (Options.bits.BAR_text)						// re-display the grid
 				DispGrid((Options.bits.EGT_cht) ? &EGT :&CHT );
 			else
 				tft.fillScreen(ST7735_BLACK);					// or clear the screen for text disaplay
+				
 		}
 		prev_short_press = ShortPressCnt;
 
 	}
 
-	
-	// according to the datasheet of LTC2495/page5 the conversion time in 50/60hz 1x speed mode is 149ms -- we wait ~200ms 
-	/*
-	
-	if (millis() < time_ms_next  )	// wait for next measure interval 
-		return; 
-	
-	time_ms_next = millis() +155; // next measurement cycle 
-		
-	*/		
- 
+
 	// Begin of acquiring TC readings  -- one reading per loop 	
 	// latch the previous reading and setup the channel for the next conversion 
 
-	if ( curr_ch >= MAX_ALL_CHANNELS-1 )
-	{	// we are once around -- start again with the cold jucntion
+	if ( curr_ch >= (MAX_ALL_CHANNELS -1))
+	{	// we are once around -- start again with the cold junction
 		loopcnt++;
 		next_ch = COLD_JCT_NDX;
 	}
@@ -921,15 +916,33 @@ void loop()
 	{	
 		next_ch = curr_ch+1;
 	}
-
-	adc_error += ADC_InitNextConversion (NULL,  next_ch );		// using global addressing of the ADC since both devices are setup the same
+	
+	// according to the datasheet of LTC2495/page5 the conversion time in 50/60hz 1x speed mode is 149ms -- we wait ~200ms 
+	time_ms_next = millis() +155; // next measurement cycle  -- this must immediatly be followed by the ADC_Init_Next... or else the ADC fails to communicate 
+	adc_error = ADC_InitNextConversion (NULL,  next_ch );		// using global addressing of the ADC since both devices are setup the same
 	
 	if (adc_error)
 	{
 			digitalWrite( LED1_PIN, 1);
 			tft.fillScreen(ST7735_BLACK);
 			tft.setCursor(0, 10);
-			tft.println( F("ADC not responding to Init"));
+			tft.print( F("ADC not responding to Init on CH "));
+			tft.println( next_ch );
+			
+			switch (adc_error )
+			{
+				case 1:
+						tft.println( F("NACK on addr"));
+						break;
+				case 2:
+					tft.println( F("NACK on data"));
+					break;
+				case 3:
+					tft.println( F("other I2c failure\n"));
+					break;
+										
+			}
+			delay( 1500 );  // to be able to read it
 			return;		// loop until problem corrected 
 	}
 
@@ -941,14 +954,24 @@ void loop()
 	if (Options.bits.CHT )
 		adc_error += ADC_AquireConversion (&CHT,  curr_ch );
  	
-		
+#ifdef SIMUL
+	CHT.Temps[curr_ch] += loopcnt;	// simulate varying temps  this will eventually turn the green and red leds on blinking
+	EGT.Temps[curr_ch] -= loopcnt;
+	// override the cold and Aux readings 	
+	CHT.Temps[0] = 27;  // The cold junction is in C
+	EGT.Temps[0] = 28;		//   "
+
+	EGT.Temps[7] = 0 + loopcnt;	// AKA AUX1
+	CHT.Temps[7] = 800 - loopcnt;	// AKA AUX2
+
+#endif
 	if (adc_error)
 	{
 			digitalWrite( LED1_PIN, 1);
 			//tft.fillScreen(ST7735_BLACK);
 			tft.setCursor(0, 10);
 			tft.println( F("ADC not ready with data"));
-	
+			delay( 500 );  
 			return;		// loop until problem corrected 
 	}
 
@@ -958,8 +981,24 @@ void loop()
 	if (Options.bits.CHT )
 		Calc_min_max_delta_alarms ( &CHT, curr_ch, loopcnt);
 	
-	if (EncoderCnt == 0 || EncoderCnt == 1)  // CHT-EGT text or bar display
+	if (enc_cnt == 0 || enc_cnt == 1)  // CHT-EGT text or bar display
+	{
 		UpdateDisplay( (Options.bits.EGT_cht) ? &EGT :&CHT, curr_ch, loopcnt);
+	}
+	else  // on status display  
+	{
+		//	tft.fillScreen(ST7735_BLACK);
+			tft.setCursor(0, 10);
+			tft.print(F("Time: "));	tft.print(time_ms_next/60000);tft.println(F(" min"));
+			tft.print(F("Volt: "));	tft.print(Vbus_Volt); tft.println(F("V "));
+			tft.print(F("Oil: "));	tft.print(EGT.Temps[AUX_CHANNEL_NDX],0);   tft.println( F("F "));
+			tft.print(F("Cold: "));	tft.print(CtoF( EGT.Temps[COLD_JCT_NDX])); 	tft.println(F("F "));
+			tft.print(F("Carb: "));	tft.print(CHT.Temps[AUX_CHANNEL_NDX],0);	tft.println(F("F "));
+			tft.print(F("Cold: "));	tft.print(CtoF( CHT.Temps[COLD_JCT_NDX])); 	tft.println(F("F "));
+
+			prev_long_press = LongPressCnt; 	// clear these inputs while in status display
+			prev_short_press = ShortPressCnt;// ""
+	}
 
 
 	
@@ -970,7 +1009,8 @@ void loop()
 
 		unsigned short secs = time_ms_next/1000;
 		
-digitalWrite( LED2_PIN, 1); //blink green led on SD card write ( every 10 Sec) 
+		digitalWrite( LED2_PIN, 1); //blink green led on SD card write ( every 10 Sec) 
+
 		
 		if (secs/60 <10 )
 		  file.write_P(PSTR("0"));
@@ -990,7 +1030,8 @@ digitalWrite( LED2_PIN, 1); //blink green led on SD card write ( every 10 Sec)
 		file.print(CHT.Temps[AUX_CHANNEL_NDX],0);file.write_P(PSTR(","));
 		file.write_P(PSTR("\n"));			
 		file.sync();
-digitalWrite( LED2_PIN, 0);
+		digitalWrite( LED2_PIN, 0);
+
 	}
 #endif	
 			
